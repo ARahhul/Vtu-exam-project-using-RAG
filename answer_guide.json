@@ -1,0 +1,87 @@
+{
+  "metadata": {
+    "title": "VTU Written Exam Answer Writing Guide",
+    "version": "1.0",
+    "purpose": "RAG document for AI agent to generate VTU-style exam answers",
+    "tags": ["VTU", "exam", "answer writing", "marking scheme", "study guide"]
+  },
+
+  "system_prompt": {
+    "id": "system_prompt",
+    "role": "system",
+    "content": "You are a VTU exam answer writing assistant. Before answering ANY question, you MUST follow the VTU Answer Writing Guide strictly. Structure every answer using the prescribed format: Definition → Explanation → Mechanism/Steps → Diagram mention → Example → Advantages/Disadvantages (if applicable) → Conclusion. Always use technical keywords, appropriate length based on marks, and present answers in a way that scores maximum marks in VTU external examinations. Never give a vague or unstructured answer. Every response must feel like a model answer written by a top-scoring VTU student."
+  },
+
+  "chunks": [
+    {
+      "id": "chunk_001",
+      "section": "Answer Structure",
+      "rule": "7-5-3 Rule",
+      "content": "For complex theory questions, organize the answer around 7 key ideas, 5 detailed explanations, and 3 supporting examples or diagrams. This ensures sufficient depth without unnecessary rambling. This rule applies primarily to 10-mark and 15-mark questions.",
+      "tags": ["structure", "theory", "10-mark", "15-mark"]
+    },
+    {
+      "id": "chunk_002",
+      "section": "Answer Structure",
+      "rule": "Sequential Order",
+      "content": "Always answer sub-questions (e.g., 1a, 1b, 1c) in the given order. Skipping around signals poor preparation and can confuse the evaluator during scanning. Each sub-question should start on a clearly labeled section.",
+      "tags": ["structure", "order", "sub-questions"]
+    },
+    {
+      "id": "chunk_003",
+      "section": "Answer Length Guidelines",
+      "rule": "Marks-to-Length Mapping",
+      "content": "Follow these length guidelines strictly based on marks allotted: 2-mark questions: 2–3 lines, direct and crisp. 5-mark questions: half a page, covering definition + explanation + example. 10-mark questions: 3–4 pages minimum, with full structure. 15-mark questions: 5–6 pages, exhaustive treatment with diagrams and examples. A single-page answer for a 10-mark theory question, even if accurate, rarely gets full marks.",
+      "tags": ["length", "marks", "2-mark", "5-mark", "10-mark", "15-mark"]
+    },
+    {
+      "id": "chunk_004",
+      "section": "Diagrams",
+      "rule": "Diagram Rules",
+      "content": "Always draw diagrams that are big, neat, and dark. Small or light sketches are ignored by evaluators. Label every component clearly. Add a title below each diagram. A well-drawn diagram with a two-line explanation often scores better than two paragraphs of plain text. Use a ruler for all lines and borders in diagrams.",
+      "tags": ["diagram", "visual", "presentation", "marks"]
+    },
+    {
+      "id": "chunk_005",
+      "section": "Keywords and Terminology",
+      "rule": "Keyword Highlighting",
+      "content": "Underline or box all important technical terms throughout the answer. Evaluators scan quickly and keywords signal competence instantly. Always use domain-specific terminology correctly. Never substitute informal or casual words in place of technical terms.",
+      "tags": ["keywords", "terminology", "underlining", "technical"]
+    },
+    {
+      "id": "chunk_006",
+      "section": "Problem Solving",
+      "rule": "Numerical and Problem-Solving Format",
+      "content": "For numerical or problem-solving questions follow this exact format: Step 1 - Clearly state all given data. Step 2 - List all required formulas upfront before solving. Step 3 - Show every step of the calculation without skipping. Step 4 - Box or highlight the final answer. Step 5 - Always include units with the final answer. Never skip steps even if they seem obvious.",
+      "tags": ["numerical", "problem-solving", "calculation", "formula", "steps"]
+    },
+    {
+      "id": "chunk_007",
+      "section": "Answer Format Template",
+      "rule": "Universal Theory Answer Flow",
+      "content": "For every theory question, follow this exact flow: 1. Definition - Give a precise, technical definition. 2. Explanation - Expand on the concept clearly. 3. Mechanism or Steps - Explain how it works, step by step. 4. Diagram - Draw and label a relevant diagram. 5. Example - Give a real-world or textbook example. 6. Advantages and Disadvantages - Include only if the question asks or if relevant. 7. Conclusion - End with one line tying the answer back to the question. This structure covers almost every pattern VTU questions follow.",
+      "tags": ["template", "theory", "flow", "structure", "format"]
+    },
+    {
+      "id": "chunk_008",
+      "section": "Presentation Rules",
+      "rule": "Physical Presentation Standards",
+      "content": "Follow these presentation rules: Use a ruler for all lines, boxes, and diagram borders. Leave a margin on the left and always write within it. Start each new main question on a fresh page. Use bullet points for lists instead of long run-on paragraphs. Write only in blue or black ink. Never mix ink colors except for diagram labels. Number all pages and question numbers clearly and boldly.",
+      "tags": ["presentation", "handwriting", "formatting", "ink", "margins"]
+    },
+    {
+      "id": "chunk_009",
+      "section": "Examiner Psychology",
+      "rule": "How Evaluators Read Answers",
+      "content": "VTU papers are evaluated quickly, often 3–5 minutes per answer. Keep these points in mind: The first 3 lines of your answer must immediately show that you understand the concept. Use clear headings for each sub-section to help the evaluator give marks confidently. Never leave a question blank — even a partial attempt with correct keywords can earn 2–3 marks. If you do not know an answer fully, write what you know systematically using proper structure, as structure itself earns partial credit.",
+      "tags": ["examiner", "psychology", "partial marks", "scanning", "evaluation"]
+    },
+    {
+      "id": "chunk_010",
+      "section": "Answer Generation Instruction",
+      "rule": "AI Agent Behavior Rule",
+      "content": "When generating any exam answer, the AI agent must: Always identify the mark value of the question first and set answer length accordingly. Always begin with a definition or core concept statement. Always use the universal theory answer flow (Definition → Explanation → Steps → Diagram → Example → Conclusion). Always underline or bold key technical terms in the generated answer. For numerical questions, always show step-by-step working. Never generate a plain paragraph dump without structure. Treat every generated answer as a model answer intended to score full marks in VTU external examination.",
+      "tags": ["AI agent", "instruction", "behavior", "answer generation", "RAG"]
+    }
+  ]
+}

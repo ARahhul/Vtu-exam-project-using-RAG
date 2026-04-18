@@ -1,0 +1,5 @@
+chroma_db/
+extracted_images/
+.venv/
+__pycache__/
+*.pyc
