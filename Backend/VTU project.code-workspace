@@ -1,0 +1,16 @@
+{
+	"folders": [
+		{
+			"name": "VTU project",
+			"path": "."
+		},
+		{
+			"name": "MODULE NOTES",
+			"path": "../MODULE NOTES"
+		},
+		{
+			"path": "../MODULE PYQS"
+		}
+	],
+	"settings": {}
+}
