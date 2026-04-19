@@ -21,6 +21,10 @@ from typing import Optional, List
 import os
 import io
 import base64
+import asyncio
+import logging
+
+import fitz                          # PyMuPDF — top-level import
 from PIL import Image
 
 from langchain_ollama import OllamaEmbeddings, OllamaLLM
@@ -28,7 +32,11 @@ from langchain_community.vectorstores import Chroma
 from langchain_classic.chains import RetrievalQA
 from langchain_core.prompts import PromptTemplate
 
-# ── Config (mirror query.py) ──────────────────────────────────────────────────
+# ── Logging ───────────────────────────────────────────────────────────────────
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# ── Config ────────────────────────────────────────────────────────────────────
 CHROMA_DB_PATH    = "./chroma_db"
 IMAGES_OUTPUT_DIR = "./extracted_images"
 EMBED_MODEL       = "nomic-embed-text"
@@ -65,7 +73,7 @@ PROMPT = PromptTemplate(
     input_variables=["context", "question"]
 )
 
-# ── App setup ────────────────────────────────────────────────────────────────
+# ── App setup ─────────────────────────────────────────────────────────────────
 app = FastAPI(title="VTU RAG API", version="1.0.0")
 
 app.add_middleware(
@@ -79,45 +87,51 @@ app.add_middleware(
 os.makedirs(IMAGES_OUTPUT_DIR, exist_ok=True)
 app.mount("/images", StaticFiles(directory=IMAGES_OUTPUT_DIR), name="images")
 
-# ── Load vectorstore once at startup ─────────────────────────────────────────
-print("[*] Loading vectorstore...")
+# ── Load vectorstore + chain ONCE at startup (not per request) ────────────────
+logger.info("[*] Loading vectorstore...")
 embeddings  = OllamaEmbeddings(model=EMBED_MODEL)
 vectorstore = Chroma(
     persist_directory=CHROMA_DB_PATH,
     embedding_function=embeddings
 )
-print("[*] Vectorstore loaded.")
+logger.info("[*] Vectorstore loaded.")
 
+# Build a single default chain (no subject filter) reused across requests.
+# Subject-filtered chains are built on-demand but still cached below.
+_chain_cache: dict = {}
 
-def build_chain(subject_filter: Optional[str] = None):
-    search_kwargs = {"k": TOP_K}
-    if subject_filter:
-        search_kwargs["filter"] = {
-            "$and": [
-                {"source_type": {"$ne": "diagram"}},
-                {"subject":     {"$eq": subject_filter}}
-            ]
-        }
-    retriever = vectorstore.as_retriever(search_kwargs=search_kwargs)
-    llm = OllamaLLM(model=LLM_MODEL, temperature=0.2)
-    chain = RetrievalQA.from_chain_type(
-        llm=llm,
-        retriever=retriever,
-        chain_type="stuff",
-        chain_type_kwargs={"prompt": PROMPT},
-        return_source_documents=True
-    )
-    return chain
+def get_chain(subject_filter: Optional[str] = None):
+    """Return a cached RetrievalQA chain for the given subject filter."""
+    cache_key = subject_filter or "__all__"
+    if cache_key not in _chain_cache:
+        search_kwargs: dict = {"k": TOP_K}
+        if subject_filter:
+            search_kwargs["filter"] = {
+                "$and": [
+                    {"source_type": {"$ne": "diagram"}},
+                    {"subject":     {"$eq": subject_filter}}
+                ]
+            }
+        retriever = vectorstore.as_retriever(search_kwargs=search_kwargs)
+        llm = OllamaLLM(model=LLM_MODEL, temperature=0.2)
+        _chain_cache[cache_key] = RetrievalQA.from_chain_type(
+            llm=llm,
+            retriever=retriever,
+            chain_type="stuff",
+            chain_type_kwargs={"prompt": PROMPT},
+            return_source_documents=True
+        )
+        logger.info("[*] Built and cached chain for filter: %s", cache_key)
+    return _chain_cache[cache_key]
 
 
 def extract_images_on_demand(source_docs) -> List[str]:
-    """Same logic as query.py — extracts relevant images from PDFs."""
-    import fitz
-    saved_images = []
+    """Extract relevant images from source PDFs and return as WebP data URIs."""
+    saved_images: List[str] = []
     seen_keys: set = set()
 
     for doc in source_docs:
-        m = doc.metadata
+        m         = doc.metadata
         xrefs_str = m.get("image_xrefs", "")
         pdf_path  = m.get("pdf_path", "")
 
@@ -145,24 +159,26 @@ def extract_images_on_demand(source_docs) -> List[str]:
                 seen_keys.add(dedup_key)
                 try:
                     pix = fitz.Pixmap(fitz_doc, xref)
-                    if pix.n > 4:
+                    # Fix: correct CMYK detection (channels minus alpha > 3)
+                    if pix.n - pix.alpha > 3:
                         pix = fitz.Pixmap(fitz.csRGB, pix)
                     img_filename = f"{pdf_stem}_p{page_num}_xref{xref}.png"
                     img_path = os.path.join(save_dir, img_filename)
                     pix.save(img_path)
+                    pix = None  # free memory
 
-                    # Convert PNG → WebP in memory (smaller payload, same quality)
+                    # Convert PNG → WebP in memory (smaller payload)
                     with Image.open(img_path) as im:
                         webp_buf = io.BytesIO()
                         im.save(webp_buf, format="WEBP", quality=80)
                         b64 = base64.b64encode(webp_buf.getvalue()).decode("utf-8")
                     saved_images.append(f"data:image/webp;base64,{b64}")
-                    pix = None
-                except Exception:
-                    pass
+                    logger.info("[img] Extracted xref %s from %s", xref, file_name)
+                except Exception as e:
+                    logger.warning("[img] Failed xref %s in %s: %s", xref, pdf_path, e)
             fitz_doc.close()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("[img] Could not open PDF %s: %s", pdf_path, e)
 
     return saved_images
 
@@ -177,12 +193,10 @@ class GenerateRequest(BaseModel):
     prompt: str
     stream: bool = False
 
-
 class Source(BaseModel):
     source_type: str
     subject: str
     file_name: str
-
 
 class QueryResponse(BaseModel):
     answer: str
@@ -190,14 +204,16 @@ class QueryResponse(BaseModel):
     images: List[str]
 
 
-# ── Endpoint ──────────────────────────────────────────────────────────────────
+# ── Endpoints ─────────────────────────────────────────────────────────────────
 @app.post("/query", response_model=QueryResponse)
-async def query(req: QueryRequest):
+async def query_endpoint(req: QueryRequest):
     if not req.question.strip():
         raise HTTPException(status_code=400, detail="Question cannot be empty.")
 
-    chain = build_chain(subject_filter=req.subject)
-    result = chain.invoke({"query": req.question})
+    chain = get_chain(subject_filter=req.subject)
+
+    # Run blocking LangChain call in a thread so we don't block the event loop
+    result = await asyncio.to_thread(chain.invoke, {"query": req.question})
 
     answer      = result["result"]
     source_docs = result.get("source_documents", [])
@@ -206,7 +222,7 @@ async def query(req: QueryRequest):
     seen: set = set()
     sources: List[Source] = []
     for doc in source_docs:
-        m = doc.metadata
+        m   = doc.metadata
         key = f"{m.get('source_type')}|{m.get('subject')}|{m.get('file_name', m.get('rule', ''))}"
         if key not in seen:
             seen.add(key)
@@ -216,9 +232,10 @@ async def query(req: QueryRequest):
                 file_name=m.get("file_name", m.get("rule", ""))
             ))
 
-    # extract_images_on_demand already returns data URIs — pass through directly
-    images = extract_images_on_demand(source_docs)
+    # extract_images_on_demand returns data URIs — run in thread too
+    images = await asyncio.to_thread(extract_images_on_demand, source_docs)
 
+    logger.info("[query] '%s' -> %d sources, %d images", req.question[:60], len(sources), len(images))
     return QueryResponse(answer=answer, sources=sources, images=images)
 
 
@@ -226,8 +243,10 @@ async def query(req: QueryRequest):
 async def health():
     return {"status": "ok", "model": LLM_MODEL}
 
+
 @app.post("/generate")
 async def generate(req: GenerateRequest):
     llm = OllamaLLM(model=req.model, temperature=0.7)
-    res = llm.invoke(req.prompt)
+    # Run blocking Ollama call in a thread
+    res = await asyncio.to_thread(llm.invoke, req.prompt)
     return {"response": res}
