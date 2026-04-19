@@ -19,6 +19,9 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import Optional, List
 import os
+import io
+import base64
+from PIL import Image
 
 from langchain_ollama import OllamaEmbeddings, OllamaLLM
 from langchain_community.vectorstores import Chroma
@@ -67,8 +70,9 @@ app = FastAPI(title="VTU RAG API", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
-    allow_methods=["*"],
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -146,7 +150,13 @@ def extract_images_on_demand(source_docs) -> List[str]:
                     img_filename = f"{pdf_stem}_p{page_num}_xref{xref}.png"
                     img_path = os.path.join(save_dir, img_filename)
                     pix.save(img_path)
-                    saved_images.append(img_path)
+
+                    # Convert PNG → WebP in memory (smaller payload, same quality)
+                    with Image.open(img_path) as im:
+                        webp_buf = io.BytesIO()
+                        im.save(webp_buf, format="WEBP", quality=80)
+                        b64 = base64.b64encode(webp_buf.getvalue()).decode("utf-8")
+                    saved_images.append(f"data:image/webp;base64,{b64}")
                     pix = None
                 except Exception:
                     pass
@@ -161,6 +171,11 @@ def extract_images_on_demand(source_docs) -> List[str]:
 class QueryRequest(BaseModel):
     question: str
     subject: Optional[str] = None
+
+class GenerateRequest(BaseModel):
+    model: str
+    prompt: str
+    stream: bool = False
 
 
 class Source(BaseModel):
@@ -201,11 +216,8 @@ async def query(req: QueryRequest):
                 file_name=m.get("file_name", m.get("rule", ""))
             ))
 
-    # Image extraction — return forward-slash relative paths for the frontend
-    images = [
-        os.path.relpath(img, IMAGES_OUTPUT_DIR).replace("\\", "/")
-        for img in extract_images_on_demand(source_docs)
-    ]
+    # extract_images_on_demand already returns data URIs — pass through directly
+    images = extract_images_on_demand(source_docs)
 
     return QueryResponse(answer=answer, sources=sources, images=images)
 
@@ -213,3 +225,9 @@ async def query(req: QueryRequest):
 @app.get("/health")
 async def health():
     return {"status": "ok", "model": LLM_MODEL}
+
+@app.post("/generate")
+async def generate(req: GenerateRequest):
+    llm = OllamaLLM(model=req.model, temperature=0.7)
+    res = llm.invoke(req.prompt)
+    return {"response": res}
