@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 CHROMA_DB_PATH    = "./chroma_db"
 IMAGES_OUTPUT_DIR = "./extracted_images"
 EMBED_MODEL       = "nomic-embed-text"
-LLM_MODEL         = "qwen3-vl:235b-cloud"
+LLM_MODEL         = "minimax-m2.7b:cloud"
 TOP_K             = 6
 
 PROMPT_TEMPLATE = """
