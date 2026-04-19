@@ -193,6 +193,11 @@ class GenerateRequest(BaseModel):
     prompt: str
     stream: bool = False
 
+class OnboardRequest(BaseModel):
+    name: str
+    email: str
+    college: str
+
 class Source(BaseModel):
     source_type: str
     subject: str
@@ -250,3 +255,9 @@ async def generate(req: GenerateRequest):
     # Run blocking Ollama call in a thread
     res = await asyncio.to_thread(llm.invoke, req.prompt)
     return {"response": res}
+
+@app.post("/onboard")
+async def onboard(req: OnboardRequest):
+    with open("users.txt", "a", encoding="utf-8") as f:
+        f.write(f"{req.name} | {req.email} | {req.college}\n")
+    return {"status": "ok"}
