@@ -11,22 +11,16 @@ Endpoint:
     POST /query
     Body:  { "question": "...", "subject": "BAD401" | null }
     Returns: { "answer": "...", "sources": [...], "images": [...] }
-
-    POST /query/stream
-    Body:  { "question": "...", "subject": "BAD401" | null }
-    Returns: Server-Sent Events stream of answer tokens + final metadata
 """
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import Optional, List
 import os
 import io
 import csv
-import json
 import base64
 import asyncio
 import time
@@ -49,7 +43,7 @@ CHROMA_DB_PATH    = "./chroma_db"
 IMAGES_OUTPUT_DIR = "./extracted_images"
 EMBED_MODEL       = "nomic-embed-text"
 LLM_MODEL         = "glm-5:cloud"
-TOP_K             = 3               # Reduced from 6 → 3 for faster retrieval + less LLM context
+TOP_K             = 6
 
 PROMPT_TEMPLATE = """
 You are a VTU exam answer writing assistant.
@@ -134,7 +128,7 @@ def get_chain(subject_filter: Optional[str] = None):
 
         search_kwargs: dict = {"k": TOP_K, "filter": where_filter}
         retriever = vectorstore.as_retriever(search_kwargs=search_kwargs)
-        llm = OllamaLLM(model=LLM_MODEL, temperature=0.2, num_predict=800)
+        llm = OllamaLLM(model=LLM_MODEL, temperature=0.2)
         _chain_cache[cache_key] = RetrievalQA.from_chain_type(
             llm=llm,
             retriever=retriever,
@@ -144,11 +138,6 @@ def get_chain(subject_filter: Optional[str] = None):
         )
         logger.info("[*] Built and cached chain for filter: %s", cache_key)
     return _chain_cache[cache_key]
-
-
-# ── Answer cache — instant responses for repeated questions ───────────────────
-_answer_cache: dict = {}
-MAX_CACHE_SIZE = 200
 
 
 def extract_images_on_demand(source_docs) -> List[str]:
@@ -256,30 +245,6 @@ def lookup_user(name: Optional[str]) -> dict:
     return fallback
 
 
-def log_analytics(req: QueryRequest, duration: float, num_sources: int, num_images: int):
-    """Write a row to analytics.csv (fire-and-forget)."""
-    try:
-        user_info = lookup_user(req.user_name)
-        file_exists = os.path.exists(ANALYTICS_FILE)
-        with open(ANALYTICS_FILE, "a", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            if not file_exists:
-                writer.writerow(["timestamp", "name", "gmail", "college", "question", "subject", "time_taken_s", "num_sources", "num_images"])
-            writer.writerow([
-                time.strftime("%Y-%m-%d %H:%M:%S"),
-                user_info["name"],
-                user_info["gmail"],
-                user_info["college"],
-                req.question,
-                req.subject or "All",
-                duration,
-                num_sources,
-                num_images,
-            ])
-    except Exception as e:
-        logger.warning("[log] Failed to write analytics: %s", e)
-
-
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @app.post("/query", response_model=QueryResponse)
@@ -287,24 +252,12 @@ async def query_endpoint(req: QueryRequest):
     if not req.question.strip():
         raise HTTPException(status_code=400, detail="Question cannot be empty.")
 
-    t0 = time.time()
+    start_time = time.time()
 
-    # ── Cache check ──────────────────────────────────────────────────────────
-    cache_key = f"{req.question.strip().lower()}|{req.subject or 'all'}"
-    if cache_key in _answer_cache:
-        cached = _answer_cache[cache_key]
-        duration = round(time.time() - t0, 1)
-        log_analytics(req, duration, len(cached["sources"]), len(cached["images"]))
-        logger.info("[query] CACHE HIT '%s' (%.1fs)", req.question[:60], duration)
-        return QueryResponse(**cached)
-
-    # ── ChromaDB retrieval + LLM ─────────────────────────────────────────────
     chain = get_chain(subject_filter=req.subject)
 
-    t1 = time.time()
+    # Run blocking LangChain call in a thread so we don't block the event loop
     result = await asyncio.to_thread(chain.invoke, {"query": req.question})
-    t2 = time.time()
-    logger.info("[timing] ChromaDB + LLM: %.2fs", t2 - t1)
 
     answer      = result["result"]
     source_docs = result.get("source_documents", [])
@@ -323,139 +276,35 @@ async def query_endpoint(req: QueryRequest):
                 file_name=m.get("file_name", m.get("rule", ""))
             ))
 
-    # ── Image extraction (in background thread) ─────────────────────────────
-    t3 = time.time()
+    # extract_images_on_demand returns data URIs — run in thread too
     images = await asyncio.to_thread(extract_images_on_demand, source_docs)
-    t4 = time.time()
-    logger.info("[timing] Image extraction: %.2fs", t4 - t3)
 
-    duration = round(time.time() - t0, 1)
+    duration = round(time.time() - start_time, 1)
 
-    # ── Cache the result ─────────────────────────────────────────────────────
-    response_data = {
-        "answer": answer,
-        "sources": [s.dict() for s in sources],
-        "images": images,
-    }
-    if len(_answer_cache) >= MAX_CACHE_SIZE:
-        # Evict oldest entry
-        oldest_key = next(iter(_answer_cache))
-        del _answer_cache[oldest_key]
-    _answer_cache[cache_key] = response_data
+    # Save combined analytics to CSV on disk
+    try:
+        user_info = lookup_user(req.user_name)
+        file_exists = os.path.exists(ANALYTICS_FILE)
+        with open(ANALYTICS_FILE, "a", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            if not file_exists:
+                writer.writerow(["timestamp", "name", "gmail", "college", "question", "subject", "time_taken_s", "num_sources", "num_images"])
+            writer.writerow([
+                time.strftime("%Y-%m-%d %H:%M:%S"),
+                user_info["name"],
+                user_info["gmail"],
+                user_info["college"],
+                req.question,
+                req.subject or "All",
+                duration,
+                len(sources),
+                len(images),
+            ])
+    except Exception as e:
+        logger.warning("[log] Failed to write analytics: %s", e)
 
-    # ── Analytics ────────────────────────────────────────────────────────────
-    log_analytics(req, duration, len(sources), len(images))
-
-    logger.info("[timing] TOTAL: %.2fs (retrieval+LLM=%.2fs, images=%.2fs)",
-                time.time() - t0, t2 - t1, t4 - t3)
     logger.info("[query] '%s' -> %d sources, %d images (%.1fs)", req.question[:60], len(sources), len(images), duration)
     return QueryResponse(answer=answer, sources=sources, images=images)
-
-
-# ── Streaming endpoint ───────────────────────────────────────────────────────
-
-@app.post("/query/stream")
-async def query_stream(req: QueryRequest):
-    """SSE streaming endpoint — sends answer tokens in real-time."""
-    if not req.question.strip():
-        raise HTTPException(status_code=400, detail="Question cannot be empty.")
-
-    t0 = time.time()
-
-    # ── Cache check — return full answer instantly as a single SSE burst ─────
-    cache_key = f"{req.question.strip().lower()}|{req.subject or 'all'}"
-    if cache_key in _answer_cache:
-        cached = _answer_cache[cache_key]
-
-        async def cached_stream():
-            yield f"data: {json.dumps({'type': 'token', 'content': cached['answer']})}\n\n"
-            yield f"data: {json.dumps({'type': 'done', 'sources': cached['sources'], 'images': cached['images'], 'time': 0.1})}\n\n"
-
-        duration = round(time.time() - t0, 1)
-        log_analytics(req, duration, len(cached["sources"]), len(cached["images"]))
-        logger.info("[stream] CACHE HIT '%s'", req.question[:60])
-        return StreamingResponse(cached_stream(), media_type="text/event-stream")
-
-    # ── Retrieval phase (get context docs) ───────────────────────────────────
-    t1 = time.time()
-
-    # Build filter
-    filters = [{"source_type": {"$in": ["module_notes", "ocr", "answer_guide"]}}]
-    if req.subject:
-        filters.append({"subject": {"$eq": req.subject}})
-    where_filter = {"$and": filters} if len(filters) == 2 else filters[0]
-
-    # Retrieve docs
-    docs = await asyncio.to_thread(
-        vectorstore.similarity_search,
-        req.question, k=TOP_K, filter=where_filter
-    )
-    t2 = time.time()
-    logger.info("[stream][timing] ChromaDB retrieval: %.2fs", t2 - t1)
-
-    # Build context string
-    context = "\n\n".join(doc.page_content for doc in docs)
-
-    # Deduplicated sources
-    seen: set = set()
-    sources_list = []
-    for doc in docs:
-        m = doc.metadata
-        key = f"{m.get('source_type')}|{m.get('subject')}|{m.get('file_name', m.get('rule', ''))}"
-        if key not in seen:
-            seen.add(key)
-            sources_list.append({
-                "source_type": m.get("source_type", ""),
-                "subject": m.get("subject", ""),
-                "file_name": m.get("file_name", m.get("rule", ""))
-            })
-
-    # Start image extraction in background
-    image_task = asyncio.get_event_loop().run_in_executor(
-        None, extract_images_on_demand, docs
-    )
-
-    # ── LLM streaming phase ──────────────────────────────────────────────────
-    full_prompt = PROMPT_TEMPLATE.replace("{context}", context).replace("{question}", req.question)
-    llm = OllamaLLM(model=LLM_MODEL, temperature=0.2, num_predict=800)
-
-    async def event_stream():
-        full_answer = []
-        t_llm_start = time.time()
-
-        # Stream tokens from LLM
-        for chunk in llm.stream(full_prompt):
-            full_answer.append(chunk)
-            yield f"data: {json.dumps({'type': 'token', 'content': chunk})}\n\n"
-
-        t_llm_end = time.time()
-        logger.info("[stream][timing] LLM generation: %.2fs", t_llm_end - t_llm_start)
-
-        # Wait for images from background
-        images = await image_task
-        t_done = time.time()
-        logger.info("[stream][timing] Image extraction: %.2fs", t_done - t_llm_end)
-
-        answer_text = "".join(full_answer)
-        duration = round(t_done - t0, 1)
-
-        # Cache
-        response_data = {"answer": answer_text, "sources": sources_list, "images": images}
-        if len(_answer_cache) >= MAX_CACHE_SIZE:
-            oldest_key = next(iter(_answer_cache))
-            del _answer_cache[oldest_key]
-        _answer_cache[cache_key] = response_data
-
-        # Analytics
-        log_analytics(req, duration, len(sources_list), len(images))
-
-        # Send final metadata
-        yield f"data: {json.dumps({'type': 'done', 'sources': sources_list, 'images': images, 'time': duration})}\n\n"
-
-        logger.info("[stream] '%s' -> %d sources, %d images (%.1fs)",
-                    req.question[:60], len(sources_list), len(images), duration)
-
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 @app.get("/health")
